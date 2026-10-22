@@ -1,0 +1,182 @@
+{
+  "name": "WF-01: Ticket Intake & AI Triage (Groq + Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "id": "webhook-node",
+      "name": "Webhook: Customer Inquiry"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/v1/tickets",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [240, 0],
+      "id": "http-fastapi-node",
+      "name": "FastAPI: Validate & Intake Ticket"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_GROQ_API_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"openai/gpt-oss-120b\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are an enterprise customer support AI triage agent. Analyze the customer inquiry and output strictly valid JSON with keys: category (billing, technical, account, general), priority (low, medium, high, urgent), sentiment (positive, neutral, negative, frustrated), summary (1-2 sentences), drafted_response (single-paragraph professional, empathetic response with no raw newlines or special control characters), confidence_score (number 0.0 to 1.0), requires_escalation (true or false). Only output pure JSON, nothing else.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Subject: {{ $json.subject }}\\nBody: {{ $json.message }}\\nCustomer: {{ $json.customer_email }}\"\n    }\n  ],\n  \"response_format\": { \"type\": \"json_object\" },\n  \"temperature\": 0.2\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [500, 0],
+      "id": "http-groq-triage",
+      "name": "Groq: AI Triage & Draft"
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawContent = $json.choices[0].message.content;\nlet parsed = {};\ntry {\n  parsed = JSON.parse(rawContent);\n} catch (e) {\n  parsed = {\n    category: 'general',\n    priority: 'medium',\n    drafted_response: rawContent,\n    confidence_score: 0.8,\n    requires_escalation: false,\n    sentiment: 'neutral'\n  };\n}\n\nconst ticket = $('FastAPI: Validate & Intake Ticket').first().json;\n\n// Format exactly according to our Supabase database schema\nconst ticketPayload = {\n  external_id: ticket.external_id || ('ext-' + Date.now()),\n  customer_email: ticket.customer_email,\n  customer_name: ticket.customer_name || 'Customer',\n  subject: ticket.subject,\n  message: ticket.message,\n  category: (parsed.category || 'general').toLowerCase(),\n  priority: (parsed.priority || 'medium').toLowerCase(),\n  status: 'draft_ready',\n  metadata: {\n    ai_draft: parsed.drafted_response || 'Thank you for reaching out.',\n    confidence: Number(parsed.confidence_score || 0.85),\n    requires_escalation: Boolean(parsed.requires_escalation),\n    sentiment: parsed.sentiment || 'neutral'\n  }\n};\n\nreturn [{\n  json: {\n    ticket_payload: ticketPayload,\n    triage_result: parsed\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [760, 0],
+      "id": "code-format-payload",
+      "name": "Format Clean JSON Payload"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://hzpqufuqenvjqrsfcqje.supabase.co/rest/v1/tickets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "YOUR_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation,resolution=merge-duplicates"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.ticket_payload) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1020, 0],
+      "id": "http-supabase-update",
+      "name": "Supabase: Persist Ticket & Draft"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"ticket\": {{ JSON.stringify($json[0] || $json) }},\n  \"triage\": {{ JSON.stringify($('Format Clean JSON Payload').first().json.triage_result) }}\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1280, 0],
+      "id": "respond-webhook-node",
+      "name": "Respond with Ticket & AI Draft"
+    }
+  ],
+  "connections": {
+    "Webhook: Customer Inquiry": {
+      "main": [
+        [
+          {
+            "node": "FastAPI: Validate & Intake Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FastAPI: Validate & Intake Ticket": {
+      "main": [
+        [
+          {
+            "node": "Groq: AI Triage & Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq: AI Triage & Draft": {
+      "main": [
+        [
+          {
+            "node": "Format Clean JSON Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Clean JSON Payload": {
+      "main": [
+        [
+          {
+            "node": "Supabase: Persist Ticket & Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase: Persist Ticket & Draft": {
+      "main": [
+        [
+          {
+            "node": "Respond with Ticket & AI Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

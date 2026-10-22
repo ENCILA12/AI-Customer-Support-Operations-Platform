@@ -1,0 +1,148 @@
+{
+  "name": "WF-01: End-to-End Ticket Intake + RAG + AI Triage (Supabase)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ticket-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "id": "webhook-node",
+      "name": "Webhook: Customer Inquiry"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/v1/tickets",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [260, 0],
+      "id": "http-fastapi-ticket",
+      "name": "FastAPI: Validate Ticket"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://127.0.0.1:8000/api/v1/triage/triage-draft",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"subject\": \"{{ $json.subject }}\",\n  \"message\": \"{{ $json.message }}\",\n  \"customer_email\": \"{{ $json.customer_email }}\",\n  \"customer_name\": \"{{ $json.customer_name }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [520, 0],
+      "id": "http-fastapi-triage",
+      "name": "FastAPI: Grounded RAG + AI Triage"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://hzpqufuqenvjqrsfcqje.supabase.co/rest/v1/tickets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "YOUR_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_SUPABASE_SERVICE_ROLE_KEY"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation,resolution=merge-duplicates"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"external_id\": \"{{ $('FastAPI: Validate Ticket').first().json.external_id }}\",\n  \"customer_email\": \"{{ $('FastAPI: Validate Ticket').first().json.customer_email }}\",\n  \"customer_name\": \"{{ $('FastAPI: Validate Ticket').first().json.customer_name }}\",\n  \"subject\": \"{{ $('FastAPI: Validate Ticket').first().json.subject }}\",\n  \"message\": \"{{ $('FastAPI: Validate Ticket').first().json.message }}\",\n  \"category\": \"{{ $json.category }}\",\n  \"priority\": \"{{ $json.priority }}\",\n  \"status\": \"draft_ready\",\n  \"metadata\": {\n    \"ai_draft\": \"{{ $json.drafted_response }}\",\n    \"confidence\": {{ $json.confidence_score }},\n    \"sentiment\": \"{{ $json.sentiment }}\",\n    \"requires_escalation\": {{ $json.requires_escalation }},\n    \"evidence_used\": {{ JSON.stringify($json.evidence_used) }},\n    \"rag_sources_count\": {{ $json.rag_sources.length }}\n  }\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [780, 0],
+      "id": "http-supabase-persist",
+      "name": "Supabase: Persist Ticket & RAG Draft"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"status\": \"success\",\n  \"ticket\": {{ JSON.stringify($json[0] || $json) }},\n  \"triage\": {{ JSON.stringify($('FastAPI: Grounded RAG + AI Triage').first().json) }}\n}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1040, 0],
+      "id": "respond-webhook-node",
+      "name": "Respond with Grounded Ticket & Draft"
+    }
+  ],
+  "connections": {
+    "Webhook: Customer Inquiry": {
+      "main": [
+        [
+          {
+            "node": "FastAPI: Validate Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FastAPI: Validate Ticket": {
+      "main": [
+        [
+          {
+            "node": "FastAPI: Grounded RAG + AI Triage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FastAPI: Grounded RAG + AI Triage": {
+      "main": [
+        [
+          {
+            "node": "Supabase: Persist Ticket & RAG Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase: Persist Ticket & RAG Draft": {
+      "main": [
+        [
+          {
+            "node": "Respond with Grounded Ticket & Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
